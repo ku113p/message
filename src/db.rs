@@ -29,6 +29,12 @@ pub async fn create_topic(db: &PgPool, name: &str, tg_api: Option<serde_json::Va
     .await
 }
 
+pub async fn list_topics(db: &PgPool) -> Result<Vec<Topic>, sqlx::Error> {
+    sqlx::query_as!(Topic, "SELECT * FROM topic ORDER BY name")
+        .fetch_all(db)
+        .await
+}
+
 pub async fn get_topic(db: &PgPool, topic_id: &Uuid) -> Result<Option<Topic>, sqlx::Error> {
     sqlx::query_as!(
         Topic,

@@ -1,23 +1,32 @@
 use std::fmt::Debug;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::{Json, Router};
 use axum::routing::{get, post};
-use axum_extra::{
-    headers::{authorization::Bearer, Authorization},
-    TypedHeader,
-};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use sqlx::types::Uuid;
 use tracing::{error, info, warn};
-use crate::db::{create_topic, get_topic, create_message, get_messages, Message};
+use crate::db::{self, create_topic, get_topic, create_message, get_messages, Message};
+
+fn check_auth(headers: &HeaderMap) -> Result<(), StatusCode> {
+    let token = match std::env::var("AUTH_TOKEN") {
+        Ok(t) => t,
+        Err(_) => return Ok(()),
+    };
+    let raw = headers.get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let provided = raw.strip_prefix("Bearer ").unwrap_or(raw);
+    if token != provided { return Err(StatusCode::UNAUTHORIZED); }
+    Ok(())
+}
 
 pub async fn get_router(db: PgPool) -> Router {
     Router::new()
-        .route("/ping", get(crate::ping_pong))
+        .route("/topics", get(list_topics_handler))
         .route("/topics", post(create_topic_handler))
         .route("/topics/:topic_id/messages", post(create_message_handler))
         .route("/topics/:topic_id/messages", get(get_messages_handler))
@@ -35,6 +44,12 @@ struct CreateTopicResponse {
     id: Uuid,
 }
 
+#[derive(Serialize)]
+struct TopicListItem {
+    id: Uuid,
+    name: String,
+}
+
 #[derive(Deserialize)]
 struct CreateMessageRequest {
     contacts: Value,
@@ -43,8 +58,10 @@ struct CreateMessageRequest {
 
 async fn create_topic_handler(
     State(db): State<PgPool>,
+    headers: HeaderMap,
     Json(payload): Json<CreateTopicRequest>,
 ) -> Result<Json<CreateTopicResponse>, StatusCode> {
+    check_auth(&headers)?;
     let tg_api = match payload.tg_api {
         None => None,
         Some(tg_api) => match tg_api.check().await {
@@ -93,19 +110,34 @@ fn log_and_raise(pre_message: &str, err: impl Debug) -> StatusCode {
 
 async fn get_messages_handler(
     Path(topic_id): Path<Uuid>,
-    TypedHeader(Authorization(bearer)): TypedHeader<Authorization<Bearer>>,
+    headers: HeaderMap,
     State(db): State<PgPool>,
 ) -> Result<Json<Vec<Message>>, StatusCode> {
-    let token = std::env::var("CONTACT_TOKEN").map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if bearer.token() != token {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
+    check_auth(&headers)?;
 
     let messages = get_messages(&db, &topic_id)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
     Ok(Json(messages))
+}
+
+async fn list_topics_handler(
+    headers: HeaderMap,
+    State(db): State<PgPool>,
+) -> Result<Json<Vec<TopicListItem>>, StatusCode> {
+    check_auth(&headers)?;
+
+    let topics = db::list_topics(&db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let items: Vec<TopicListItem> = topics.into_iter().map(|t| TopicListItem {
+        id: t.id,
+        name: t.name,
+    }).collect();
+
+    Ok(Json(items))
 }
 
 const TELEGRAM_API_URL: &str = "https://api.telegram.org/bot";

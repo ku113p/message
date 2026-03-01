@@ -5,7 +5,7 @@ use axum::{Router, routing::get};
 use sqlx::PgPool;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tracing::{info, Level};
+use tracing::{info, warn, Level};
 
 fn get_env_var(key: &str) -> Result<String, String> {
     std::env::var(key).map_err(|_| format!("{key} must be set"))
@@ -32,6 +32,10 @@ async fn main() -> Result<(), String> {
         .await
         .expect("Failed run migrations");
 
+    if std::env::var("AUTH_TOKEN").is_err() {
+        warn!("AUTH_TOKEN not set - admin endpoints are unprotected");
+    }
+
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -39,7 +43,7 @@ async fn main() -> Result<(), String> {
 
     let app_router = Router::new()
         .route("/ping", get(ping_pong))
-        .nest("/contact", router::get_router(db.clone()).await)
+        .merge(router::get_router(db.clone()).await)
         .layer(cors)
         .layer(TraceLayer::new_for_http());
 
